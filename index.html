@@ -48,7 +48,8 @@
     background-image: linear-gradient(45deg, transparent 50%, var(--lilac) 50%), linear-gradient(135deg, var(--lilac) 50%, transparent 50%);
     background-position: calc(100% - 18px) 19px, calc(100% - 12px) 19px; background-size: 6px 6px; background-repeat: no-repeat;
   }
-  select:disabled { opacity: 1; color: var(--lilac); background-image: none; border-style: dashed; }
+  select.locked { color: var(--lilac); background-image: none; border-style: dashed; pointer-events: none; }
+  .field.lockable { cursor: pointer; }
 
   hr { border: 0; height: 3px; background: var(--line); margin: 4px 0; border-radius: 2px; }
 
@@ -247,7 +248,7 @@ function render() {
     fillSelect($('bus'), cfg.buses.map(b => ({ value: b.name, label: b.name })), 'Bus', state.bus);
   }
   $('shift').value = state.shift || '';
-  ['driver', 'bus', 'shift'].forEach(id => $(id).disabled = !!state.active);
+  ['driver', 'bus', 'shift'].forEach(id => { $(id).classList.toggle('locked', !!state.active); $(id).tabIndex = state.active ? -1 : 0; $(id).parentElement.classList.toggle('lockable', !!state.active); });
 
   const cur = state.active ? current() : null;
   $('stopNum').textContent = cur ? cur.stop.num : '–';
@@ -324,12 +325,27 @@ async function maybeStart() {
   if (!state.driver || !state.bus || !state.shift) return;
   if (!cfg.serviceDay) { await info('No service today', 'The app can only record passengers Monday to Friday.'); return; }
   if (!runs().length) { await info('No runs found', 'The timetable has no runs for ' + state.bus + ' in the ' + state.shift + ' shift.'); return; }
-  const ok = await confirmBox('Start shift?', state.shift + ' shift on ' + state.bus + ' for ' + state.driver + '.', 'Start');
+  const now = new Date();
+  const expected = now.getHours() < 12 ? 'Morning' : 'Afternoon';
+  let text = state.shift + ' shift on ' + state.bus + ' for ' + state.driver + '.';
+  if (state.shift !== expected) text += '<br><br><b style="color:var(--orange)">It is ' + now.getHours() + ':' + String(now.getMinutes()).padStart(2, '0') + '. Are you sure it is the ' + state.shift + ' shift?</b>';
+  const ok = await confirmBox('Start shift?', text, 'Start');
   if (!ok) return;
-  Object.assign(state, { active: true, date: todayStr(), runIdx: 0, stopIdx: 0, inVal: 0, outTyped: 0, outRoad: 0, pending: 0, lastAdvance: 0 });
+  Object.assign(state, { active: true, date: todayStr(), runIdx: 0, stopIdx: 0, inVal: 0, outTyped: 0, outRoad: 0, pending: 0, lastAdvance: 0, recorded: 0 });
   persist(); render(); requestWake();
-  apiPost({ action: 'start', date: state.date, bus: state.bus, shift: state.shift, driver: state.driver }).catch(() => {});
 }
+
+/* Tocco su DRIVER/BUS/SHIFT bloccati: correzione se non ci sono ancora dati */
+['driver', 'bus', 'shift'].forEach(id => $(id).parentElement.addEventListener('click', async () => {
+  if (!state.active) return;
+  if (state.recorded) {
+    return info('Shift already recording', 'Data has already been saved for this shift. To change driver, bus or shift, press END SHIFT and start again.');
+  }
+  if (await confirmBox('Change selection?', 'No data has been recorded yet. You can choose driver, bus and shift again.', 'Change')) {
+    Object.assign(state, { active: false, runIdx: 0, stopIdx: 0, inVal: 0, outTyped: 0, outRoad: 0, pending: 0 });
+    persist(); render(); releaseWake();
+  }
+}));
 
 function commitCurrent(via) {
   const cur = current(); if (!cur) return;
@@ -340,6 +356,7 @@ function commitCurrent(via) {
     row: cur.run.row, run: cur.run.run, stop: cur.stop.num, in: state.inVal || 0, out: out, via: via
   });
   save(LS_QUEUE, queue);
+  state.recorded = (state.recorded || 0) + 1;
 }
 
 function advance(via) {
