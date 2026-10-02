@@ -429,8 +429,13 @@ async function flush() {
       const item = queue[0];
       let res;
       try { res = await apiPost(item); } catch (e) { break; }        // niente rete: riprova dopo
-      queue.shift();
-      if (!res.ok) { item.error = res.error; failed.push(item); save(LS_FAILED, failed); }
+      if (!res.ok) {
+        /* Rifiuto del server: quasi sempre un invio disturbato (segnale debole).
+           Riprova da solo fino a 5 volte; solo dopo lo mette in "not saved". */
+        item.tries = (item.tries || 0) + 1; item.error = res.error;
+        if (item.tries < 5) { save(LS_QUEUE, queue); break; }
+        queue.shift(); failed.push(item); save(LS_FAILED, failed);
+      } else queue.shift();
       save(LS_QUEUE, queue); renderSync();
     }
   } finally { flushing = false; renderSync(); }
