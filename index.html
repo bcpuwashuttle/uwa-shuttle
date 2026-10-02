@@ -163,7 +163,7 @@
 
     <button class="btn off" id="endBtn"><div class="fill"></div><span>END SHIFT</span></button>
 
-    <div class="status"><span id="sync">–</span><span id="gps">GPS –</span></div>
+    <div class="status"><span id="sync">–</span><span id="ver"></span><span id="gps">GPS –</span></div>
   </main>
 </div>
 
@@ -173,6 +173,7 @@
 /* ===== Settings to fill in ===== */
 const API_URL = 'https://script.google.com/macros/s/AKfycbydFfJ0BIt7KphjfSscQOyUX8o0CF2EnsW096ASuM99mOneqW4KpRxba04_ZD291ghq/exec';
 const API_KEY = '8pzJ8D0StgshTitWj1lvHhML';
+const APP_VERSION = 'v1.3';   // cambiare ad ogni aggiornamento
 /* =============================== */
 
 const LS_STATE = 'uwa_state_v1', LS_QUEUE = 'uwa_queue_v1', LS_CFG = 'uwa_cfg_v1', LS_FAILED = 'uwa_failed_v1';
@@ -257,6 +258,7 @@ function fillSelect(sel, items, placeholder, value) {
 }
 
 function tick() {
+  $('ver').textContent = APP_VERSION;
   const d = new Date(), p = n => String(n).padStart(2, '0');
   $('date').textContent = fmtDate(todayStr());
   $('clock').textContent = p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
