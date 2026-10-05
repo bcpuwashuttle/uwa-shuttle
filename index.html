@@ -272,8 +272,10 @@ setInterval(tick, 1000);
 function outKey() {
   const cur = state.active ? current() : null; if (!cur) return null;
   const nxt = nextPos(), nextStop = nxt ? stopAt(nxt) : null;
-  if (state.departed && nextStop && nextStop.hasOut) return 'pending';
-  if (cur.stop.hasOut && !state.departed) return 'outTyped';   // lasciata la fermata con l'OUT: si spegne
+  /* 'pending': dal momento in cui si lascia una fermata (questa o una precedente, anche senza OUT)
+     fino all'arrivo alla prossima fermata con OUT, il campo resta acceso per chi scende lungo la strada */
+  if (state.awaitingOut && state.departed && nextStop && nextStop.hasOut) return 'pending';
+  if (cur.stop.hasOut && !state.departed) return 'outTyped';   // siamo fermi qui con l'OUT: acceso finché non si riparte
   return null;
 }
 
@@ -304,15 +306,15 @@ function render() {
   $('runNum').textContent = cur ? cur.run.run + ' / ' + totalRuns() : '–';
 
   const ok = outKey();
-  $('inVal').value = state.active ? (state.inVal || 0) : 0;
+  if (typingField !== 'inVal') $('inVal').value = state.active ? (state.inVal || 0) : 0;   // non toccare il campo mentre si sta scrivendo
   $('inVal').disabled = !cur;
   $('inBox').classList.toggle('disabled', !cur);
-  $('outVal').value = ok ? (state[ok] || 0) : 0;
+  if (typingField !== 'outVal') $('outVal').value = ok ? (state[ok] || 0) : 0;   // idem per OUT
   $('outVal').disabled = !ok;
   $('outBox').classList.toggle('disabled', !ok);
 
-  $('plusIn').classList.toggle('off', !cur);
-  $('minusOut').classList.toggle('off', !ok);
+  $('plusIn').classList.toggle('off', !cur || typingField === 'inVal');
+  $('minusOut').classList.toggle('off', !ok || typingField === 'outVal');   // inibito mentre si scrive il numero a mano
   $('nextBtn').classList.toggle('off', !(cur && nxt));
   $('endBtn').classList.toggle('off', !state.active);
   renderSync(); renderGps();
@@ -379,7 +381,7 @@ async function maybeStart() {
   if (state.shift !== expected) text += '<br><br><b style="color:var(--orange)">It is ' + now.getHours() + ':' + String(now.getMinutes()).padStart(2, '0') + '. Are you sure it is the ' + state.shift + ' shift?</b>';
   const ok = await confirmHold('Start shift?', text, 'Hold to confirm');
   if (!ok) return;
-  Object.assign(state, { active: true, date: todayStr(), runIdx: 0, stopIdx: 0, inVal: 0, outTyped: 0, outRoad: 0, pending: 0, lastAdvance: 0, recorded: 0, atStop: false, departed: false });
+  Object.assign(state, { active: true, date: todayStr(), runIdx: 0, stopIdx: 0, inVal: 0, outTyped: 0, outRoad: 0, pending: 0, lastAdvance: 0, recorded: 0, atStop: false, departed: false, awaitingOut: false, lockedOnFirst: true });   // resta sulla prima fermata del turno finché non la si raggiunge davvero
   persist(); render(); requestWake();
 }
 
@@ -416,6 +418,8 @@ function advance(via, quiet) {
   state.outTyped = (cur && cur.stop.hasOut) ? (state.pending || 0) : 0;   // chi è sceso lungo la strada resta nel campo OUT
   state.pending = 0;
   state.atStop = via === 'gps'; state.departed = false;
+  state.awaitingOut = !(cur && cur.stop.hasOut);   // arrivati su una fermata senza OUT: resta in attesa della prossima con OUT
+  state.lockedOnFirst = false;   // raggiunta la prima fermata del turno: il GPS torna a seguire il percorso normalmente
   state.lastAdvance = Date.now();
   persist(); if (quiet) return;
   render(); flush();
@@ -473,9 +477,18 @@ function onFix(p) {
   if (c0 && c0.lat != null && c0.lon != null && !state.departed) {
     const d0 = dist(lastFix, c0), r0 = c0.radius || 40;
     if (d0 <= r0 + 15) { if (!state.atStop) { state.atStop = true; persist(); } }
-    else if (state.atStop && d0 > r0 + Math.max(DEPART_MARGIN, lastFix.acc)) { state.departed = true; persist(); render(); }
+    else if (state.atStop && d0 > r0 + Math.max(DEPART_MARGIN, lastFix.acc)) { state.departed = true; state.awaitingOut = true; persist(); render(); }
   }
   if (Date.now() - (state.lastAdvance || 0) < MIN_GAP_MS) return;
+  /* Appena iniziato il turno: ignora qualunque altra fermata, anche se il GPS vi si trova già sopra
+     (es. bus parcheggiato a Claremont Campus per il cambio turno, ma il run pomeridiano parte da un'altra fermata).
+     La prima fermata (stopIdx 0) è già quella corrente fin dallo start: basta restare fermi lì senza mai
+     chiamare advance(), che passerebbe invece a quella successiva. Si sblocca al VERO arrivo fisico sulla
+     prima fermata (state.atStop, già impostato poco sopra in questa stessa chiamata), non quando si riparte. */
+  if (state.lockedOnFirst) {
+    if (state.atStop) state.lockedOnFirst = false;
+    return;
+  }
   /* Di norma guarda solo la prossima fermata; dopo una pausa del GPS anche quelle successive */
   let catchUp = Date.now() < catchUpUntil;
   if (catchUp && c0 && c0.lat != null && dist(lastFix, c0) <= (c0.radius || 40)) catchUp = false;  // ancora alla fermata attuale
@@ -514,17 +527,18 @@ document.addEventListener('visibilitychange', () => {
 });
 
 /* ---------- Inputs ---------- */
+let typingField = null;   // 'inVal' o 'outVal' mentre il relativo tastierino numerico è aperto, altrimenti null
 function numInput(el, keyFn) {
   let t = null;
   const arm = () => { clearTimeout(t); t = setTimeout(() => el.blur(), KEYPAD_CLOSE_MS); };
-  el.addEventListener('focus', () => { el.placeholder = el.value; el.value = ''; arm(); });
+  el.addEventListener('focus', () => { typingField = el.id; el.placeholder = el.value; el.value = ''; arm(); render(); });
   el.addEventListener('input', () => {
     const key = keyFn(); if (!key) { el.blur(); return; }
     const v = el.value.replace(/\D/g, '').slice(0, 3);
     el.value = v; state[key] = Number(v || 0); persist(); arm();
   });
   el.addEventListener('keydown', e => { if (e.key === 'Enter' || e.keyCode === 13) { e.preventDefault(); el.blur(); } });
-  el.addEventListener('blur', () => { clearTimeout(t); el.placeholder = ''; const key = keyFn(); el.value = key ? (state[key] || 0) : 0; });
+  el.addEventListener('blur', () => { clearTimeout(t); typingField = null; el.placeholder = ''; const key = keyFn(); el.value = key ? (state[key] || 0) : 0; render(); });
 }
 numInput($('inVal'), () => 'inVal');
 numInput($('outVal'), outKey);
@@ -548,21 +562,23 @@ longPress($('endBtn'), endShift);
 /* + IN / − OUT, e il menu Settings premendoli insieme */
 const held = { plusIn: false, minusOut: false };
 let suppressUntil = 0;
+let wasTypingOnPress = null;   // il campo che stava ricevendo il numero appena PRIMA del tocco sul pulsante
 ['plusIn', 'minusOut'].forEach(id => {
   const el = $(id);
   el.addEventListener('pointerdown', () => {
-    held[id] = true;
+    wasTypingOnPress = typingField;   // va letto qui: il tocco sul pulsante sposta subito il focus e
+    held[id] = true;                  // chiude il tastierino (blur), azzerando typingField PRIMA del click
     if (held.plusIn && held.minusOut) { suppressUntil = Date.now() + 1200; openSettings(); }
   });
   ['pointerup', 'pointerleave', 'pointercancel'].forEach(ev => el.addEventListener(ev, () => { held[id] = false; }));
   el.addEventListener('contextmenu', e => e.preventDefault());
 });
 $('plusIn').addEventListener('click', () => {
-  if (Date.now() < suppressUntil || $('plusIn').classList.contains('off')) return;
+  if (Date.now() < suppressUntil || $('plusIn').classList.contains('off') || wasTypingOnPress === 'inVal') return;
   state.inVal = (state.inVal || 0) + 1; persist(); render();
 });
 $('minusOut').addEventListener('click', () => {
-  if (Date.now() < suppressUntil || $('minusOut').classList.contains('off')) return;
+  if (Date.now() < suppressUntil || $('minusOut').classList.contains('off') || wasTypingOnPress === 'outVal') return;
   const key = outKey(); if (!key) return;
   state[key] = (state[key] || 0) + 1; persist(); render();
 });
@@ -588,7 +604,7 @@ $('runLine').addEventListener('click', () => {
       $('cNo').onclick = close;
       $('cOk').onclick = () => {
         state.runIdx = Number($('cRun').value); state.stopIdx = Number($('cStop').value);
-        state.atStop = false; state.departed = false;
+        state.atStop = false; state.departed = false; state.awaitingOut = false; state.lockedOnFirst = false;
         state.lastAdvance = Date.now(); persist(); close(); render();
       };
     });
