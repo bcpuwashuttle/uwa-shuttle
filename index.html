@@ -364,6 +364,12 @@ function info(title, text) {
   return new Promise(res => dialog('<h3>' + title + '</h3><p>' + text + '</p><div class="actions one"><button class="pri" id="dOk">OK</button></div>',
     close => { $('dOk').onclick = () => { close(); res(); }; }));
 }
+function waitBox(title, text) {
+  // Finestra bloccante senza pulsanti: resta aperta finche' non viene chiusa da codice.
+  $('dlg').innerHTML = '<h3>' + title + '</h3><p>' + text + '</p>';
+  $('overlay').classList.add('show');
+}
+function closeWaitBox() { $('overlay').classList.remove('show'); }
 
 /* ---------- Shift flow ---------- */
 async function maybeStart() {
@@ -432,7 +438,13 @@ async function endShift() {
   if (!ok) return;
   commitCurrent('end');
   Object.assign(state, { active: false, runIdx: 0, stopIdx: 0, inVal: 0, outTyped: 0, outRoad: 0, pending: 0, driver: '', shift: '' });
-  persist(); render(); flush(); releaseWake();
+  persist(); render(); releaseWake();
+  if (queue.length) {
+    waitBox('Sending…', "Don't close the app. Sending the last data to the sheet.");
+    await flush();
+    while (queue.length) { await new Promise(r => setTimeout(r, 3000)); await flush(); }
+    closeWaitBox();
+  } else flush();
 }
 
 /* ---------- Sending ---------- */
